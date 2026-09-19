@@ -1,0 +1,6 @@
+osmnx
+networkx
+fastapi
+uvicorn[standard]
+geopandas
+matplotlib

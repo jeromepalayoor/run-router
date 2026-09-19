@@ -152,8 +152,8 @@
 
             let startMarker = null;
             let startLatLng = null;
-            let routeLayers = [];
-            let selectedIndex = -1;
+            let routeData = [];
+            let selectedEntry = null;
 
             const latInput = document.getElementById('lat');
             const lonInput = document.getElementById('lon');
@@ -181,27 +181,26 @@
             });
 
             function clearRoutes() {
-            routeLayers.forEach(l => map.removeLayer(l));
-            routeLayers = [];
+            routeData.forEach(entry => map.removeLayer(entry.layer));
+            routeData = [];
             routeListDiv.innerHTML = '';
-            selectedIndex = -1;
+            selectedEntry = null;
             }
 
-            function selectRoute(i) {
-            selectedIndex = i;
-            routeLayers.forEach((layer, idx) => {
-                if (idx === i) {
-                layer.setStyle({ color: '#e63946', weight: 5, opacity: 1 });
-                layer.bringToFront();
+            function selectRoute(entry) {
+            selectedEntry = entry;
+            routeData.forEach(e => {
+                if (e === entry) {
+                e.layer.setStyle({ color: '#e63946', weight: 5, opacity: 1 });
+                e.layer.bringToFront();
+                e.listItem.classList.add('selected');
                 } else {
-                layer.setStyle({ color: '#1d3557', weight: 3, opacity: 0.6 });
+                e.layer.setStyle({ color: '#1d3557', weight: 3, opacity: 0.6 });
+                e.listItem.classList.remove('selected');
                 }
             });
-            document.querySelectorAll('.route-item').forEach((el, idx) => {
-                el.classList.toggle('selected', idx === i);
-            });
             }
-
+ 
             submitBtn.addEventListener('click', async () => {
             if (!startLatLng) return;
             clearRoutes();
@@ -218,13 +217,12 @@
             };
 
             const t0 = performance.now();
-            let routeCount = 0;
 
             try {
                 const res = await fetch(`${apiUrlInput.value}/routes/stream`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(body),
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
                 });
                 if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
@@ -233,59 +231,66 @@
                 let buffer = '';
 
                 while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
+                    const { done, value } = await reader.read();
+                    if (done) break;
 
-                buffer += decoder.decode(value, { stream: true });
+                    buffer += decoder.decode(value, { stream: true });
 
-                const lines = buffer.split('\n');
-                buffer = lines.pop();
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop();
 
-                for (const line of lines) {
-                    if (!line.trim()) continue;
-                    const item = JSON.parse(line);
+                    for (const line of lines) {
+                        if (!line.trim()) continue;
+                        const item = JSON.parse(line);
 
-                    if (item.type === 'route') {
-                    addRoute(item, routeCount);
-                    routeCount++;
-                    const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
-                    statusDiv.textContent = `${routeCount} route(s) found so far... (${elapsed}s)`;
-                    } else if (item.type === 'done') {
-                    const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
-                    statusDiv.textContent = `${item.count} route(s) found in ${elapsed}s.`;
+                        if (item.type === 'route') {
+                            addRoute(item);
+                            const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
+                            statusDiv.textContent = `${routeData.length} route(s) found so far... (${elapsed}s)`;
+                        } else if (item.type === 'done') {
+                            const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
+                            statusDiv.textContent = `${item.count} route(s) found in ${elapsed}s.`;
 
-                    if (routeLayers.length > 0) {
-                        const group = L.featureGroup(routeLayers);
-                        map.fitBounds(group.getBounds(), { padding: [30, 30] });
-                        selectRoute(0);
-                    } else {
-                        statusDiv.textContent += ' No routes matched your tolerance — try a different distance.';
-                    }
+                            if (routeData.length > 0) {
+                                routeData.sort((a, b) => a.route.diff_m - b.route.diff_m);
+                                routeData.forEach((entry, idx) => {
+                                    entry.listItem.textContent = `Route ${idx + 1} — ${(entry.route.distance_m / 1000).toFixed(2)} km`;
+                                    routeListDiv.appendChild(entry.listItem);
+                                });
+
+                                const group = L.featureGroup(routeData.map(e => e.layer));
+                                map.fitBounds(group.getBounds(), { padding: [30, 30] });
+                                selectRoute(routeData[0]);
+                            } else {
+                                statusDiv.textContent += ' No routes matched your tolerance — try a different distance.';
+                            }
+                        }
                     }
                 }
-                }
-
+            
             } catch (err) {
                 statusDiv.textContent = `Error: ${err.message}. Check the API is running and CORS is enabled.`;
             } finally {
                 submitBtn.disabled = false;
             }
             });
-
-            function addRoute(route, i) {
-            const latlngs = route.coordinates.map(c => [c[1], c[0]]);
-            const layer = L.polyline(latlngs, {
-                color: '#1d3557', weight: 3, opacity: 0.6
-            }).addTo(map);
-            layer.on('click', () => selectRoute(i));
-            routeLayers.push(layer);
-
-            const km = (route.distance_m / 1000).toFixed(2);
-            const item = document.createElement('div');
-            item.className = 'route-item';
-            item.textContent = `Route ${i + 1} — ${km} km`;
-            item.addEventListener('click', () => selectRoute(i));
-            routeListDiv.appendChild(item);
+            
+            function addRoute(route) {
+                const latlngs = route.coordinates.map(c => [c[1], c[0]]);
+                const layer = L.polyline(latlngs, {
+                    color: '#1d3557', weight: 3, opacity: 0.6
+                }).addTo(map);
+                
+                const km = (route.distance_m / 1000).toFixed(2);
+                const listItem = document.createElement('div');
+                listItem.className = 'route-item';
+                listItem.textContent = `Route ${routeData.length + 1} — ${km} km`;
+                routeListDiv.appendChild(listItem);
+                
+                const entry = { route, layer, listItem };
+                layer.on('click', () => selectRoute(entry));
+                listItem.addEventListener('click', () => selectRoute(entry));
+                routeData.push(entry);
             }
         </script>
     </body>
