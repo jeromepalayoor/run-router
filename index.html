@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <title>Run Router</title>
+        <link rel="stylesheet"
+            href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css" />
+        <script
+            src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+        <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            font-family: system-ui, sans-serif;
+        }
+
+        #app {
+            display: flex;
+            height: 100%;
+        }
+
+        #sidebar {
+            width: 300px;
+            flex-shrink: 0;
+            padding: 16px;
+            box-sizing: border-box;
+            background: #1a1a1a;
+            color: #eee;
+            overflow-y: auto;
+        }
+
+        #map {
+            flex-grow: 1;
+            height: 100%;
+        }
+
+        label {
+            display: block;
+            margin-top: 12px;
+            font-size: 13px;
+            color: #aaa;
+        }
+
+        input {
+            width: 100%;
+            box-sizing: border-box;
+            padding: 6px 8px;
+            margin-top: 4px;
+            border-radius: 4px;
+            border: 1px solid #444;
+            background: #222;
+            color: #eee;
+        }
+
+        button {
+            width: 100%;
+            margin-top: 16px;
+            padding: 10px;
+            border: none;
+            border-radius: 6px;
+            background: #e63946;
+            color: white;
+            font-weight: 600;
+            cursor: pointer;
+        }
+
+        button:disabled {
+            background: #555;
+            cursor: default;
+        }
+
+        #status {
+            margin-top: 12px;
+            font-size: 13px;
+            color: #aaa;
+            min-height: 20px;
+        }
+
+        .route-item {
+            margin-top: 8px;
+            padding: 10px;
+            border-radius: 6px;
+            background: #2a2a2a;
+            cursor: pointer;
+            font-size: 13px;
+            border: 2px solid transparent;
+        }
+
+        .route-item.selected {
+            border-color: #e63946;
+            background: #332222;
+        }
+
+        .route-item:hover {
+            background: #333;
+        }
+        
+        h1 {
+            font-size: 16px;
+            margin: 0 0 4px 0;
+        }
+        
+        p.hint {
+            font-size: 12px;
+            color: #777;
+            margin-top: 4px;
+        }
+    </style>
+    </head>
+    <body>
+        <div id="app">
+            <div id="sidebar">
+                <h1>Run Router</h1>
+                <p class="hint">Click the map to set your start point.</p>
+
+                <label>Starting position latitude</label>
+                <input id="lat" type="number" step="any" readonly />
+
+                <label>Starting position longitude</label>
+                <input id="lon" type="number" step="any" readonly />
+
+                <label>Target distance (km)</label>
+                <input id="distance" type="number" step="0.5" value="5" />
+
+                <label>Tolerance (m)</label>
+                <input id="tolerance" type="number" step="100" value="500" />
+
+                <label>Max attempts</label>
+                <input id="maxAttempts" type="number" step="1" value="20" />
+
+                <label>Number of options</label>
+                <input id="numCandidates" type="number" step="1" value="5" />
+
+                <label>API base URL</label>
+                <input id="apiUrl" type="text" value="http://127.0.0.1:8000" />
+
+                <button id="submitBtn" disabled>Generate routes</button>
+
+                <div id="status"></div>
+                <div id="routeList"></div>
+            </div>
+            <div id="map"></div>
+        </div>
+
+        <script>
+            const map = L.map('map').setView([1.3521, 103.8198], 12);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '&copy; OpenStreetMap contributors',
+                maxZoom: 19,
+            }).addTo(map);
+
+            let startMarker = null;
+            let startLatLng = null;
+            let routeLayers = [];
+            let selectedIndex = -1;
+
+            const latInput = document.getElementById('lat');
+            const lonInput = document.getElementById('lon');
+            const distanceInput = document.getElementById('distance');
+            const toleranceInput = document.getElementById('tolerance');
+            const maxAttemptsInput = document.getElementById('maxAttempts');
+            const numCandidatesInput = document.getElementById('numCandidates');
+            const apiUrlInput = document.getElementById('apiUrl');
+            const submitBtn = document.getElementById('submitBtn');
+            const statusDiv = document.getElementById('status');
+            const routeListDiv = document.getElementById('routeList');
+
+            map.on('click', (e) => {
+            startLatLng = e.latlng;
+            latInput.value = e.latlng.lat.toFixed(7);
+            lonInput.value = e.latlng.lng.toFixed(7);
+
+            if (startMarker) map.removeLayer(startMarker);
+            startMarker = L.circleMarker(e.latlng, {
+                radius: 8, color: '#fff', fillColor: '#e63946', fillOpacity: 1, weight: 2
+            }).addTo(map);
+
+            submitBtn.disabled = false;
+            clearRoutes();
+            });
+
+            function clearRoutes() {
+            routeLayers.forEach(l => map.removeLayer(l));
+            routeLayers = [];
+            routeListDiv.innerHTML = '';
+            selectedIndex = -1;
+            }
+
+            function selectRoute(i) {
+            selectedIndex = i;
+            routeLayers.forEach((layer, idx) => {
+                if (idx === i) {
+                layer.setStyle({ color: '#e63946', weight: 5, opacity: 1 });
+                layer.bringToFront();
+                } else {
+                layer.setStyle({ color: '#1d3557', weight: 3, opacity: 0.6 });
+                }
+            });
+            document.querySelectorAll('.route-item').forEach((el, idx) => {
+                el.classList.toggle('selected', idx === i);
+            });
+            }
+
+            submitBtn.addEventListener('click', async () => {
+            if (!startLatLng) return;
+            clearRoutes();
+            statusDiv.textContent = 'Requesting routes...';
+            submitBtn.disabled = true;
+
+            const body = {
+                lat: startLatLng.lat,
+                lon: startLatLng.lng,
+                distance_km: parseFloat(distanceInput.value),
+                tolerance_m: parseFloat(toleranceInput.value),
+                max_attempts: parseInt(maxAttemptsInput.value),
+                num_candidates: parseInt(numCandidatesInput.value),
+            };
+
+            const t0 = performance.now();
+            let routeCount = 0;
+
+            try {
+                const res = await fetch(`${apiUrlInput.value}/routes/stream`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+                });
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+                const reader = res.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+
+                while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+
+                const lines = buffer.split('\n');
+                buffer = lines.pop();
+
+                for (const line of lines) {
+                    if (!line.trim()) continue;
+                    const item = JSON.parse(line);
+
+                    if (item.type === 'route') {
+                    addRoute(item, routeCount);
+                    routeCount++;
+                    const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
+                    statusDiv.textContent = `${routeCount} route(s) found so far... (${elapsed}s)`;
+                    } else if (item.type === 'done') {
+                    const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
+                    statusDiv.textContent = `${item.count} route(s) found in ${elapsed}s.`;
+
+                    if (routeLayers.length > 0) {
+                        const group = L.featureGroup(routeLayers);
+                        map.fitBounds(group.getBounds(), { padding: [30, 30] });
+                        selectRoute(0);
+                    } else {
+                        statusDiv.textContent += ' No routes matched your tolerance — try a different distance.';
+                    }
+                    }
+                }
+                }
+
+            } catch (err) {
+                statusDiv.textContent = `Error: ${err.message}. Check the API is running and CORS is enabled.`;
+            } finally {
+                submitBtn.disabled = false;
+            }
+            });
+
+            function addRoute(route, i) {
+            const latlngs = route.coordinates.map(c => [c[1], c[0]]);
+            const layer = L.polyline(latlngs, {
+                color: '#1d3557', weight: 3, opacity: 0.6
+            }).addTo(map);
+            layer.on('click', () => selectRoute(i));
+            routeLayers.push(layer);
+
+            const km = (route.distance_m / 1000).toFixed(2);
+            const item = document.createElement('div');
+            item.className = 'route-item';
+            item.textContent = `Route ${i + 1} — ${km} km`;
+            item.addEventListener('click', () => selectRoute(i));
+            routeListDiv.appendChild(item);
+            }
+        </script>
+    </body>
+</html>
